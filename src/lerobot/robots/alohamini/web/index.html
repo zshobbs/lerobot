@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LeRobot Web Control</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
+        #videos { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 20px; }
+        img { background: #eee; width: 100%; max-width: 400px; border-radius: 8px; }
+        #status { margin-bottom: 10px; }
+        #state-container { display: flex; gap: 20px; width: 820px; }
+        pre { white-space: pre-wrap; background: #f4f4f4; padding: 10px; border-radius: 8px; width: 100%;}
+        .status-light { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
+        .disconnected { background: red; }
+        .connected { background: green; }
+    </style>
+</head>
+<body>
+    <h1>LeRobot Web Control</h1>
+    <div id="status">
+        <span>WebSocket: <span id="ws-status-light" class="status-light disconnected"></span><span id="ws-status">Disconnected</span></span> | 
+        <span>Bridge: <span id="bridge-status-light" class="status-light disconnected"></span><span id="bridge-status">Disconnected</span></span>
+    </div>
+    <div id="videos">
+        <img id="image-1" />
+        <img id="image-2" />
+        <img id="image-3" />
+        <img id="image-4" />
+    </div>
+    <div id="state-container">
+        <div>
+            <h2>Robot State</h2>
+            <pre id="state">{}</pre>
+        </div>
+        <div>
+            <h2>Keyboard Input</h2>
+            <pre id="key-display">Keys pressed: None</pre>
+        </div>
+    </div>
+
+    <script>
+        const wsStatus = document.getElementById('ws-status');
+        const wsStatusLight = document.getElementById('ws-status-light');
+        const bridgeStatus = document.getElementById('bridge-status');
+        const bridgeStatusLight = document.getElementById('bridge-status-light');
+        const stateEl = document.getElementById('state');
+        const imageElements = [
+            document.getElementById('image-1'),
+            document.getElementById('image-2'),
+            document.getElementById('image-3'),
+            document.getElementById('image-4'),
+        ];
+        const keyDisplay = document.getElementById('key-display');
+        const pressedKeys = new Set();
+
+        let ws;
+        
+        const actionState = {
+            "x.vel": 0.0,
+            "y.vel": 0.0,
+            "theta.vel": 0.0,
+            "lift.vel": 0.0,
+        };
+
+        const keyMap = {
+            'w': { axis: 'x.vel', val: 1.0 },
+            's': { axis: 'x.vel', val: -1.0 },
+            'a': { axis: 'y.vel', val: 1.0 },
+            'd': { axis: 'y.vel', val: -1.0 },
+            'q': { axis: 'theta.vel', val: 1.0 },
+            'e': { axis: 'theta.vel', val: -1.0 },
+            'u': { axis: 'lift.vel', val: 1.0 },
+            'j': { axis: 'lift.vel', val: -1.0 },
+        };
+
+        let bridgeStatusTimeout;
+        function updateBridgeStatus(isConnected) {
+            clearTimeout(bridgeStatusTimeout);
+            if (isConnected) {
+                if (bridgeStatus.textContent !== 'Connected') {
+                    bridgeStatus.textContent = 'Connected';
+                    bridgeStatusLight.className = 'status-light connected';
+                }
+            }
+            bridgeStatusTimeout = setTimeout(() => {
+                bridgeStatus.textContent = 'Disconnected';
+                bridgeStatusLight.className = 'status-light disconnected';
+            }, 2000);
+        }
+
+        function updateKeyDisplay() {
+            if (pressedKeys.size > 0) {
+                keyDisplay.textContent = 'Keys pressed: ' + Array.from(pressedKeys).join(', ');
+            } else {
+                keyDisplay.textContent = 'Keys pressed: None';
+            }
+        }
+
+        function connect() {
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+
+            ws.onopen = () => {
+                wsStatus.textContent = 'Connected';
+                wsStatusLight.className = 'status-light connected';
+                console.log('WebSocket connected');
+                setInterval(sendAction, 100); 
+            };
+
+            ws.onclose = () => {
+                wsStatus.textContent = 'Disconnected';
+                wsStatusLight.className = 'status-light disconnected';
+                console.log('WebSocket disconnected. Retrying in 3s...');
+                setTimeout(connect, 3000);
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'robot_state') {
+                    if(msg.data) {
+                        stateEl.textContent = JSON.stringify(msg.data, null, 2);
+                        const hasArmData = Object.keys(msg.data).some(k => k.startsWith('arm_'));
+                        updateBridgeStatus(hasArmData);
+                    }
+                    
+                    if (msg.images) {
+                        let i = 0;
+                        const sortedImageKeys = Object.keys(msg.images).sort();
+                        for (const cam_name of sortedImageKeys) {
+                            if (i < imageElements.length) {
+                                imageElements[i].src = `data:image/jpeg;base64,${msg.images[cam_name]}`;
+                                i++;
+                            }
+                        }
+                    }
+                }
+            };
+        }
+        
+        function sendAction() {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'action', data: actionState }));
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            if (keyMap[e.key]) {
+                e.preventDefault();
+                actionState[keyMap[e.key].axis] = keyMap[e.key].val;
+                pressedKeys.add(e.key);
+                updateKeyDisplay();
+            }
+        });
+        
+        window.addEventListener('keyup', (e) => {
+             if (keyMap[e.key]) {
+                e.preventDefault();
+                if(actionState[keyMap[e.key].axis] === keyMap[e.key].val) {
+                   actionState[keyMap[e.key].axis] = 0.0;
+                }
+                pressedKeys.delete(e.key);
+                updateKeyDisplay();
+            }
+        });
+
+        connect();
+    </script>
+</body>
+</html>

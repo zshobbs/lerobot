@@ -2,6 +2,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, Protocol
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BusLike(Protocol):
     motors: Dict[str, object]
@@ -157,6 +160,7 @@ class LiftAxis:
 
     def update(self) -> None:
         """Call every frame (recommended 50–100 Hz)"""
+        logger.debug(f"[lift_axis.update] enabled={self.enabled}, target_mm={self._target_mm}")
         if not self.enabled or self._target_mm is None: return
         cur_mm = self.get_height_mm()
         err = self._target_mm - cur_mm
@@ -173,7 +177,7 @@ class LiftAxis:
         # Read current for debug only
         raw_cur_ma = int(self._bus.read("Present_Current", self.cfg.name, normalize=False))
         cur_ma = raw_cur_ma * 6.5
-        print(f"[lift_axis.update] target={self._target_mm:.2f} mm, cur={cur_mm:.2f} mm, err={err:.2f} mm, v={v:.1f}| current={cur_ma} mA")
+        logger.debug(f"[lift_axis.update] target={self._target_mm:.2f} mm, cur={cur_mm:.2f} mm, err={err:.2f} mm, v={v:.1f}| current={cur_ma} mA")
 
     # Lightweight coupling with action/obs
     def contribute_observation(self, obs: Dict[str, float]) -> None:
@@ -191,7 +195,7 @@ class LiftAxis:
         - f"{name}.height_mm": target height (mm)  (recommended)
         - f"{name}.vel"      : target velocity     (advanced)
         """
-        #print(f"[lift_axis.apply_action] action={action}")  # debug
+        logger.debug(f"[lift_axis.apply_action] action={action}")
         if not self.enabled: return
         key_h = f"{self.cfg.name}.height_mm"
         key_v = f"{self.cfg.name}.vel"

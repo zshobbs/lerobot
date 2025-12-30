@@ -107,6 +107,11 @@ dynamixel = ["dynamixel-sdk>=3.7.31,<3.9.0"]
 gamepad = ["lerobot[pygame-dep]", "hidapi>=0.14.0,<0.15.0"]
 hopejr = ["lerobot[feetech]", "lerobot[pygame-dep]"]
 lekiwi = ["lerobot[feetech]", "pyzmq>=26.2.1,<28.0.0"]
+web_host = [
+    "fastapi>=0.111.0,<2.0.0",
+    "uvicorn>=0.30.0,<2.0.0",
+    "websockets>=12.0,<13.0",
+]
 unitree_g1 = [
     "pyzmq>=26.2.1,<28.0.0",
     "onnxruntime>=1.16.0"
@@ -156,6 +161,7 @@ all = [
     "lerobot[gamepad]",
     "lerobot[hopejr]",
     "lerobot[lekiwi]",
+    "lerobot[web_host]",
     "lerobot[reachy2]",
     "lerobot[kinematics]",
     "lerobot[intelrealsense]",
@@ -171,7 +177,7 @@ all = [
     "lerobot[aloha]",
     "lerobot[pusht]",
     "lerobot[phone]",
-    "lerobot[libero]",
+    # "lerobot[libero]",
     "lerobot[metaworld]",
 ]
 

@@ -72,8 +72,9 @@ async def stream_robot_state():
             image_payload = {}
             for k, v in obs.items():
                 if isinstance(v, np.ndarray) and v.ndim == 3:
-                    # Encode image to JPEG and then to base64
-                    ret, buffer = cv2.imencode(".jpg", v, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    # Convert BGR (OpenCV default) to RGB for browser display
+                    rgb_frame = cv2.cvtColor(v, cv2.COLOR_BGR2RGB)
+                    ret, buffer = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
                     if ret:
                         image_payload[k] = base64.b64encode(buffer).decode("utf-8")
                 else:

@@ -21,18 +21,17 @@ from ..config import RobotConfig
 
 
 def lekiwi_cameras_config() -> dict[str, CameraConfig]:
-    return {
          "head_top": OpenCVCameraConfig(
-             index_or_path="/dev/video-top", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video-top", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),
          "wrist_right": OpenCVCameraConfig(
-             index_or_path="/dev/video-follower-right", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video-follower-right", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),
          "head_front": OpenCVCameraConfig(
-             index_or_path="/dev/video-chest", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video-chest", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),
           "wrist_left": OpenCVCameraConfig(
-              index_or_path="/dev/video-follower-left", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+              index_or_path="/dev/video-follower-left", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
           ),
     }
 
@@ -59,6 +58,7 @@ class LeKiwiHostConfig:
     # Network Configuration
     port_zmq_cmd: int = 5555
     port_zmq_observations: int = 5556
+    port_zmq_observations_hq: int = 5557
 
     # Duration of the application
     connection_time_s: int = 6000
@@ -76,7 +76,9 @@ class LeKiwiUniClientConfig(RobotConfig):
     # Network Configuration
     remote_ip: str
     port_zmq_cmd: int = 5555
+    port_zmq_cmd: int = 5555
     port_zmq_observations: int = 5556
+    port_zmq_observations_hq: int = 5557
 
     teleop_keys: dict[str, str] = field(
         default_factory=lambda: {

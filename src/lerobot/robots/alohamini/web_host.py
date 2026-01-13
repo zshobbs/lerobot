@@ -21,6 +21,7 @@ import logging
 import base64
 from contextlib import asynccontextmanager
 import os
+from datetime import datetime
 
 import numpy as np
 import cv2
@@ -32,10 +33,43 @@ import uvicorn
 from lerobot.robots.alohamini.config_lekiwi_uni import LeKiwiUniConfig
 from lerobot.robots.alohamini.lekiwi_uni import LeKiwiUni
 
+# Note: LeRobotDataset is NOT imported here to save resources on the Pi.
+# Recording is offloaded to a remote client.
+
 robot: LeKiwiUni | None = None
 latest_action: dict | None = None
 latest_observation: dict = {}
 server_action_state: dict = {}
+
+class RecordingState:
+    """
+    Manages the recording state (flag and metadata) but DOES NOT write to disk.
+    It serves as a signal source for the remote recorder.
+    """
+    def __init__(self):
+        self.is_recording = False
+        self.repo_id = None
+        self.frame_count = 0
+
+    def start(self, repo_id: str):
+        if self.is_recording:
+            return
+        logging.info(f"Broadcasting START recording signal: {repo_id}")
+        self.repo_id = repo_id
+        self.is_recording = True
+        self.frame_count = 0
+
+    def stop(self):
+        if not self.is_recording:
+            return
+        logging.info("Broadcasting STOP recording signal.")
+        self.is_recording = False
+
+    def increment_frame(self):
+        if self.is_recording:
+            self.frame_count += 1
+
+recording_state = RecordingState()
 
 
 class ConnectionManager:
@@ -68,13 +102,17 @@ async def stream_robot_state():
             obs = robot.get_observation()
             latest_observation = obs.copy()  # Store the latest observation
             
+            # Update frame count if recording (for UI display)
+            if recording_state.is_recording:
+                recording_state.increment_frame()
+
             state_payload = {}
             image_payload = {}
             for k, v in obs.items():
                 if isinstance(v, np.ndarray) and v.ndim == 3:
                     # Convert BGR (OpenCV default) to RGB for browser display
                     rgb_frame = cv2.cvtColor(v, cv2.COLOR_BGR2RGB)
-                    ret, buffer = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    ret, buffer = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
                     if ret:
                         image_payload[k] = base64.b64encode(buffer).decode("utf-8")
                 else:
@@ -88,10 +126,13 @@ async def stream_robot_state():
                 "type": "robot_state",
                 "data": state_payload,
                 "images": image_payload,
+                "action": server_action_state,
+                "is_recording": recording_state.is_recording,
+                "frame_count": recording_state.frame_count,
             }))
         
-        # Adjust sleep time for desired frequency (e.g., 20Hz)
-        await asyncio.sleep(1 / 20)
+        # Adjust sleep time for desired frequency (e.g., 30Hz)
+        await asyncio.sleep(1 / 30)
 
 
 async def send_merged_actions():
@@ -100,7 +141,7 @@ async def send_merged_actions():
         if robot and server_action_state:
             # Create a copy to avoid race conditions if the state is updated during send
             action_to_send = server_action_state.copy()
-            logging.debug(f"Sending merged action: {action_to_send}")
+            # logging.debug(f"Sending merged action: {action_to_send}")
             robot.send_action(action_to_send)
         # Match the rate of the leader arm bridge
         await asyncio.sleep(1 / 50)
@@ -131,6 +172,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     stream_task.cancel()
     action_task.cancel()
+    recording_state.stop() # Ensure recording is stopped
     logging.info("Shutting down AlohaMini Host.")
     if robot and robot.is_connected:
         robot.disconnect()
@@ -160,6 +202,7 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
+            
             if message.get("type") == "action":
                 action_data = message["data"]
                 
@@ -182,11 +225,30 @@ async def websocket_endpoint(websocket: WebSocket):
                             del server_action_state["lift_axis.height_mm"]
 
                 # Update the shared state with the new data from this client
-                logging.debug(f"Updating server_action_state with: {action_data}")
+                # logging.debug(f"Updating server_action_state with: {action_data}")
                 server_action_state.update(action_data)
                 
                 # Store for recording purposes
                 latest_action = server_action_state.copy()
+            
+            elif message.get("type") == "start_recording":
+                repo_id = message.get("repo_id")
+                if not repo_id:
+                     repo_id = f"lerobot/recording_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                recording_state.start(repo_id)
+                await manager.broadcast(json.dumps({
+                    "type": "recording_status",
+                    "status": "started",
+                    "repo_id": repo_id
+                }))
+            
+            elif message.get("type") == "stop_recording":
+                recording_state.stop()
+                await manager.broadcast(json.dumps({
+                    "type": "recording_status",
+                    "status": "stopped"
+                }))
+
             else:
                 logging.warning(f"Received unknown message type from websocket: {message.get('type')}")
     except WebSocketDisconnect:

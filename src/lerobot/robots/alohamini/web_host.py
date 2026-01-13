@@ -74,18 +74,33 @@ recording_state = RecordingState()
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self.lq_connections: list[WebSocket] = []
+        self.hq_connections: list[WebSocket] = []
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, quality: str = "lq"):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        if quality == "hq":
+            self.hq_connections.append(websocket)
+        else:
+            self.lq_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.lq_connections:
+            self.lq_connections.remove(websocket)
+        if websocket in self.hq_connections:
+            self.hq_connections.remove(websocket)
 
-    async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
+    async def broadcast(self, message_lq: str, message_hq: str):
+        for connection in self.lq_connections:
+            try:
+                await connection.send_text(message_lq)
+            except Exception:
+                pass
+        for connection in self.hq_connections:
+            try:
+                await connection.send_text(message_hq)
+            except Exception:
+                pass
 
 
 manager = ConnectionManager()
@@ -107,14 +122,24 @@ async def stream_robot_state():
                 recording_state.increment_frame()
 
             state_payload = {}
-            image_payload = {}
+            image_payload_lq = {}
+            image_payload_hq = {}
+
             for k, v in obs.items():
                 if isinstance(v, np.ndarray) and v.ndim == 3:
                     # Convert BGR (OpenCV default) to RGB for browser display
                     rgb_frame = cv2.cvtColor(v, cv2.COLOR_BGR2RGB)
-                    ret, buffer = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
-                    if ret:
-                        image_payload[k] = base64.b64encode(buffer).decode("utf-8")
+                    
+                    # LQ Encoding (Quality 50)
+                    ret_lq, buffer_lq = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
+                    if ret_lq:
+                        image_payload_lq[k] = base64.b64encode(buffer_lq).decode("utf-8")
+                    
+                    # HQ Encoding (Quality 90)
+                    ret_hq, buffer_hq = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+                    if ret_hq:
+                        image_payload_hq[k] = base64.b64encode(buffer_hq).decode("utf-8")
+                        
                 else:
                     # Convert numpy floats to python floats for JSON serialization
                     if isinstance(v, (np.float32, np.float64)):
@@ -122,14 +147,18 @@ async def stream_robot_state():
                     else:
                         state_payload[k] = v
             
-            await manager.broadcast(json.dumps({
+            base_message = {
                 "type": "robot_state",
                 "data": state_payload,
-                "images": image_payload,
                 "action": server_action_state,
                 "is_recording": recording_state.is_recording,
                 "frame_count": recording_state.frame_count,
-            }))
+            }
+
+            message_lq = json.dumps({**base_message, "images": image_payload_lq})
+            message_hq = json.dumps({**base_message, "images": image_payload_hq})
+
+            await manager.broadcast(message_lq, message_hq)
         
         # Adjust sleep time for desired frequency (e.g., 30Hz)
         await asyncio.sleep(1 / 30)
@@ -194,8 +223,8 @@ async def root():
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+async def websocket_endpoint(websocket: WebSocket, quality: str = "lq"):
+    await manager.connect(websocket, quality)
     global latest_action, server_action_state
     LIFT_STEP_MM = 10.0
     try:
@@ -236,18 +265,33 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not repo_id:
                      repo_id = f"lerobot/recording_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 recording_state.start(repo_id)
-                await manager.broadcast(json.dumps({
-                    "type": "recording_status",
-                    "status": "started",
-                    "repo_id": repo_id
-                }))
+                recording_state.start(repo_id)
+                await manager.broadcast(
+                    json.dumps({
+                        "type": "recording_status",
+                        "status": "started",
+                        "repo_id": repo_id
+                    }),
+                    json.dumps({
+                        "type": "recording_status",
+                        "status": "started",
+                        "repo_id": repo_id
+                    })
+                )
             
             elif message.get("type") == "stop_recording":
                 recording_state.stop()
-                await manager.broadcast(json.dumps({
-                    "type": "recording_status",
-                    "status": "stopped"
-                }))
+                recording_state.stop()
+                await manager.broadcast(
+                    json.dumps({
+                        "type": "recording_status",
+                        "status": "stopped"
+                    }),
+                    json.dumps({
+                        "type": "recording_status",
+                        "status": "stopped"
+                    })
+                )
 
             else:
                 logging.warning(f"Received unknown message type from websocket: {message.get('type')}")

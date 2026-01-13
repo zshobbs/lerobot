@@ -64,9 +64,7 @@ class LeKiwiConfig(RobotConfig):
 class LeKiwiHostConfig:
     # Network Configuration
     port_zmq_cmd: int = 5555
-    port_zmq_cmd: int = 5555
     port_zmq_observations: int = 5556
-    port_zmq_observations_hq: int = 5557
 
     # Duration of the application
     connection_time_s: int = 6000
@@ -86,9 +84,7 @@ class LeKiwiClientConfig(RobotConfig):
     # Network Configuration
     remote_ip: str
     port_zmq_cmd: int = 5555
-    port_zmq_cmd: int = 5555
     port_zmq_observations: int = 5556
-    port_zmq_observations_hq: int = 5557
 
     teleop_keys: dict[str, str] = field(
         default_factory=lambda: {

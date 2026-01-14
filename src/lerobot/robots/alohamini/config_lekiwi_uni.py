@@ -23,16 +23,16 @@ from ..config import RobotConfig
 def lekiwi_cameras_config() -> dict[str, CameraConfig]:
     return {
          "head_top": OpenCVCameraConfig(
-             index_or_path="/dev/video-top", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video-top", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),
          "wrist_right": OpenCVCameraConfig(
-             index_or_path="/dev/video-follower-right", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video-follower-right", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),
          "head_front": OpenCVCameraConfig(
-             index_or_path="/dev/video-chest", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+             index_or_path="/dev/video-chest", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),
           "wrist_left": OpenCVCameraConfig(
-              index_or_path="/dev/video-follower-left", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+              index_or_path="/dev/video-follower-left", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
           ),
     }
 

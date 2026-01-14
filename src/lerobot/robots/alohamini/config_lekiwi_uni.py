@@ -21,6 +21,7 @@ from ..config import RobotConfig
 
 
 def lekiwi_cameras_config() -> dict[str, CameraConfig]:
+    return {
          "head_top": OpenCVCameraConfig(
              index_or_path="/dev/video-top", fps=20, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
          ),

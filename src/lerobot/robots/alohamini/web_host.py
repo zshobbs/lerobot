@@ -14,14 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 import asyncio
+import base64
 import json
 import logging
-import base64
 from contextlib import asynccontextmanager
-import os
 from datetime import datetime
+import os
+from functools import partial # Added import
 
 import numpy as np
 import cv2
@@ -91,74 +91,92 @@ class ConnectionManager:
             self.hq_connections.remove(websocket)
 
     async def broadcast(self, message_lq: str, message_hq: str):
+        # Fire-and-forget broadcast to avoid waiting for slow clients
         for connection in self.lq_connections:
-            try:
-                await connection.send_text(message_lq)
-            except Exception:
-                pass
+            asyncio.create_task(connection.send_text(message_lq))
         for connection in self.hq_connections:
-            try:
-                await connection.send_text(message_hq)
-            except Exception:
-                pass
-
+            asyncio.create_task(connection.send_text(message_hq))
 
 manager = ConnectionManager()
 
 
+def encode_frame(frame: np.ndarray, quality: int) -> str | None:
+    """Converts, encodes, and base64-encodes a single image frame."""
+    try:
+        # Convert BGR (OpenCV default) to RGB for browser display
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # JPEG encoding
+        ret, buffer = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        if ret:
+            return base64.b64encode(buffer).decode("utf-8")
+    except Exception as e:
+        logging.error(f"Failed to encode frame: {e}")
+    return None
+
+
 async def stream_robot_state():
-    """Periodically fetches robot state, encodes images, and broadcasts everything."""
+    """Periodically fetches robot state, encodes images in parallel, and broadcasts everything."""
     global latest_observation
     while True:
-        if robot:
-            # Update the lift controller to execute its control loop
-            robot.lift.update()
+        if not robot:
+            await asyncio.sleep(0.1)
+            continue
+        
+        # Update the lift controller to execute its control loop
+        await asyncio.to_thread(robot.lift.update)
 
-            obs = robot.get_observation()
-            latest_observation = obs.copy()  # Store the latest observation
-            
-            # Update frame count if recording (for UI display)
-            if recording_state.is_recording:
-                recording_state.increment_frame()
+        obs = await asyncio.to_thread(robot.get_observation)
+        latest_observation = obs.copy()
 
-            state_payload = {}
-            image_payload_lq = {}
-            image_payload_hq = {}
+        if recording_state.is_recording:
+            recording_state.increment_frame()
 
-            for k, v in obs.items():
-                if isinstance(v, np.ndarray) and v.ndim == 3:
-                    # Convert BGR (OpenCV default) to RGB for browser display
-                    rgb_frame = cv2.cvtColor(v, cv2.COLOR_BGR2RGB)
-                    
-                    # LQ Encoding (Quality 50)
-                    ret_lq, buffer_lq = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 50])
-                    if ret_lq:
-                        image_payload_lq[k] = base64.b64encode(buffer_lq).decode("utf-8")
-                    
-                    # HQ Encoding (Quality 90)
-                    ret_hq, buffer_hq = cv2.imencode(".jpg", rgb_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
-                    if ret_hq:
-                        image_payload_hq[k] = base64.b64encode(buffer_hq).decode("utf-8")
-                        
-                else:
-                    # Convert numpy floats to python floats for JSON serialization
-                    if isinstance(v, (np.float32, np.float64)):
-                        state_payload[k] = float(v)
-                    else:
-                        state_payload[k] = v
-            
-            base_message = {
-                "type": "robot_state",
-                "data": state_payload,
-                "action": server_action_state,
-                "is_recording": recording_state.is_recording,
-                "frame_count": recording_state.frame_count,
-            }
+        state_payload = {}
+        image_frames = {}
 
-            message_lq = json.dumps({**base_message, "images": image_payload_lq})
-            message_hq = json.dumps({**base_message, "images": image_payload_hq})
+        for k, v in obs.items():
+            if isinstance(v, np.ndarray) and v.ndim == 3:
+                image_frames[k] = v
+            elif isinstance(v, (np.float32, np.float64)):
+                state_payload[k] = float(v)
+            else:
+                state_payload[k] = v
+        
+        # Concurrently encode all images in a thread pool
+        encoding_tasks = []
+        for key, frame in image_frames.items():
+            # partial is used to pass arguments to the function called by to_thread
+            lq_task = asyncio.to_thread(partial(encode_frame, frame=frame, quality=50))
+            hq_task = asyncio.to_thread(partial(encode_frame, frame=frame, quality=90))
+            encoding_tasks.append((key, lq_task, hq_task))
+        
+        encoded_results = await asyncio.gather(*[t for _, lq_t, hq_t in encoding_tasks for t in (lq_t, hq_t)])
+        
+        image_payload_lq = {}
+        image_payload_hq = {}
+        
+        result_idx = 0
+        for key, _, _ in encoding_tasks:
+            lq_b64 = encoded_results[result_idx]
+            hq_b64 = encoded_results[result_idx + 1]
+            if lq_b64:
+                image_payload_lq[key] = lq_b64
+            if hq_b64:
+                image_payload_hq[key] = hq_b64
+            result_idx += 2
 
-            await manager.broadcast(message_lq, message_hq)
+        base_message = {
+            "type": "robot_state",
+            "data": state_payload,
+            "action": server_action_state,
+            "is_recording": recording_state.is_recording,
+            "frame_count": recording_state.frame_count,
+        }
+
+        message_lq = json.dumps({**base_message, "images": image_payload_lq})
+        message_hq = json.dumps({**base_message, "images": image_payload_hq})
+
+        await manager.broadcast(message_lq, message_hq)
         
         # Adjust sleep time for desired frequency (e.g., 30Hz)
         await asyncio.sleep(1 / 30)
@@ -168,11 +186,9 @@ async def send_merged_actions():
     """Periodically sends the merged action state to the robot."""
     while True:
         if robot and server_action_state:
-            # Create a copy to avoid race conditions if the state is updated during send
             action_to_send = server_action_state.copy()
-            # logging.debug(f"Sending merged action: {action_to_send}")
             robot.send_action(action_to_send)
-        # Match the rate of the leader arm bridge
+        # Match the rate of the leader arm bridge (e.g., 50Hz)
         await asyncio.sleep(1 / 50)
 
 
@@ -254,7 +270,6 @@ async def websocket_endpoint(websocket: WebSocket, quality: str = "lq"):
                             del server_action_state["lift_axis.height_mm"]
 
                 # Update the shared state with the new data from this client
-                # logging.debug(f"Updating server_action_state with: {action_data}")
                 server_action_state.update(action_data)
                 
                 # Store for recording purposes
@@ -264,7 +279,6 @@ async def websocket_endpoint(websocket: WebSocket, quality: str = "lq"):
                 repo_id = message.get("repo_id")
                 if not repo_id:
                      repo_id = f"lerobot/recording_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                recording_state.start(repo_id)
                 recording_state.start(repo_id)
                 await manager.broadcast(
                     json.dumps({
@@ -280,7 +294,6 @@ async def websocket_endpoint(websocket: WebSocket, quality: str = "lq"):
                 )
             
             elif message.get("type") == "stop_recording":
-                recording_state.stop()
                 recording_state.stop()
                 await manager.broadcast(
                     json.dumps({

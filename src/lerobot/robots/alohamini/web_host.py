@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import argparse
 import asyncio
 import base64
 import json
@@ -21,7 +22,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 import os
-from functools import partial # Added import
+from functools import partial
 
 import numpy as np
 import cv2
@@ -118,66 +119,67 @@ async def stream_robot_state():
     """Periodically fetches robot state, encodes images in parallel, and broadcasts everything."""
     global latest_observation
     while True:
-        if not robot:
-            await asyncio.sleep(0.1)
-            continue
-        
-        # Update the lift controller to execute its control loop
-        await asyncio.to_thread(robot.lift.update)
+        try:
+            if not robot:
+                await asyncio.sleep(0.1)
+                continue
+            
+            obs = await asyncio.to_thread(robot.get_observation)
+            latest_observation = obs.copy()
 
-        obs = await asyncio.to_thread(robot.get_observation)
-        latest_observation = obs.copy()
+            if recording_state.is_recording:
+                recording_state.increment_frame()
 
-        if recording_state.is_recording:
-            recording_state.increment_frame()
+            state_payload = {}
+            image_frames = {}
 
-        state_payload = {}
-        image_frames = {}
+            for k, v in obs.items():
+                if isinstance(v, np.ndarray) and v.ndim == 3:
+                    image_frames[k] = v
+                elif isinstance(v, (np.float32, np.float64)):
+                    state_payload[k] = float(v)
+                else:
+                    state_payload[k] = v
+            
+            # Concurrently encode all images in a thread pool
+            encoding_tasks = []
+            for key, frame in image_frames.items():
+                # partial is used to pass arguments to the function called by to_thread
+                lq_task = asyncio.to_thread(partial(encode_frame, frame=frame, quality=50))
+                hq_task = asyncio.to_thread(partial(encode_frame, frame=frame, quality=90))
+                encoding_tasks.append((key, lq_task, hq_task))
+            
+            encoded_results = await asyncio.gather(*[t for _, lq_t, hq_t in encoding_tasks for t in (lq_t, hq_t)])
+            
+            image_payload_lq = {}
+            image_payload_hq = {}
+            
+            result_idx = 0
+            for key, _, _ in encoding_tasks:
+                lq_b64 = encoded_results[result_idx]
+                hq_b64 = encoded_results[result_idx + 1]
+                if lq_b64:
+                    image_payload_lq[key] = lq_b64
+                if hq_b64:
+                    image_payload_hq[key] = hq_b64
+                result_idx += 2
 
-        for k, v in obs.items():
-            if isinstance(v, np.ndarray) and v.ndim == 3:
-                image_frames[k] = v
-            elif isinstance(v, (np.float32, np.float64)):
-                state_payload[k] = float(v)
-            else:
-                state_payload[k] = v
-        
-        # Concurrently encode all images in a thread pool
-        encoding_tasks = []
-        for key, frame in image_frames.items():
-            # partial is used to pass arguments to the function called by to_thread
-            lq_task = asyncio.to_thread(partial(encode_frame, frame=frame, quality=50))
-            hq_task = asyncio.to_thread(partial(encode_frame, frame=frame, quality=90))
-            encoding_tasks.append((key, lq_task, hq_task))
-        
-        encoded_results = await asyncio.gather(*[t for _, lq_t, hq_t in encoding_tasks for t in (lq_t, hq_t)])
-        
-        image_payload_lq = {}
-        image_payload_hq = {}
-        
-        result_idx = 0
-        for key, _, _ in encoding_tasks:
-            lq_b64 = encoded_results[result_idx]
-            hq_b64 = encoded_results[result_idx + 1]
-            if lq_b64:
-                image_payload_lq[key] = lq_b64
-            if hq_b64:
-                image_payload_hq[key] = hq_b64
-            result_idx += 2
+            base_message = {
+                "type": "robot_state",
+                "data": state_payload,
+                "action": server_action_state,
+                "is_recording": recording_state.is_recording,
+                "frame_count": recording_state.frame_count,
+            }
 
-        base_message = {
-            "type": "robot_state",
-            "data": state_payload,
-            "action": server_action_state,
-            "is_recording": recording_state.is_recording,
-            "frame_count": recording_state.frame_count,
-        }
+            message_lq = json.dumps({**base_message, "images": image_payload_lq})
+            message_hq = json.dumps({**base_message, "images": image_payload_hq})
 
-        message_lq = json.dumps({**base_message, "images": image_payload_lq})
-        message_hq = json.dumps({**base_message, "images": image_payload_hq})
-
-        await manager.broadcast(message_lq, message_hq)
-        
+            await manager.broadcast(message_lq, message_hq)
+            
+        except Exception as e:
+            logging.error(f"Error in stream_robot_state: {e}")
+            
         # Adjust sleep time for desired frequency (e.g., 30Hz)
         await asyncio.sleep(1 / 30)
 
@@ -185,9 +187,16 @@ async def stream_robot_state():
 async def send_merged_actions():
     """Periodically sends the merged action state to the robot."""
     while True:
-        if robot and server_action_state:
-            action_to_send = server_action_state.copy()
-            robot.send_action(action_to_send)
+        try:
+            if robot:
+                # Execute lift control loop (P-controller) safely
+                await asyncio.to_thread(robot.update_lift)
+
+            if robot and server_action_state:
+                action_to_send = server_action_state.copy()
+                await asyncio.to_thread(robot.send_action, action_to_send)
+        except Exception as e:
+            logging.error(f"Error in send_merged_actions: {e}")
         # Match the rate of the leader arm bridge (e.g., 50Hz)
         await asyncio.sleep(1 / 50)
 

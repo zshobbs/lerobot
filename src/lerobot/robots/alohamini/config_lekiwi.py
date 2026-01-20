@@ -91,10 +91,10 @@ class LeKiwiClientConfig(RobotConfig):
             # Movement
             "forward": "w",
             "backward": "s",
-            "left": "z",
-            "right": "x",
-            "rotate_left": "a",
-            "rotate_right": "d",
+            "left": "a",
+            "right": "d",
+            "rotate_left": "q",
+            "rotate_right": "e",
             # Speed control
             "speed_up": "r",
             "speed_down": "f",
@@ -102,7 +102,7 @@ class LeKiwiClientConfig(RobotConfig):
             "lift_up": "u",
             "lift_down": "j",
             # quit teleop
-            "quit": "q",
+            "quit": "p",
         }
     )
 

@@ -17,6 +17,7 @@
 import inspect
 import logging
 import os
+import threading
 import time
 from functools import cached_property
 from itertools import chain
@@ -35,14 +36,14 @@ from lerobot.motors.feetech import (
 
 from ..robot import Robot
 from ..utils import ensure_safe_goal_position
-from .config_lekiwi_uni import LeKiwiUniConfig # Changed import
+from .config_lekiwi_uni import LeKiwiUniConfig
 
 logger = logging.getLogger(__name__)
 
 from .lift_axis import LiftAxis, LiftAxisConfig
 
 
-class LeKiwiUni(Robot): # Renamed class
+class LeKiwiUni(Robot):
     """
     The robot includes a three omniwheel mobile base and a remote follower arm.
     The leader arm is connected locally (on the laptop) and its joint positions are recorded and then
@@ -50,17 +51,18 @@ class LeKiwiUni(Robot): # Renamed class
     In parallel, keyboard teleoperation is used to generate raw velocity commands for the wheels.
     """
 
-    config_class = LeKiwiUniConfig # Changed config class
-    name = "lekiwi_uni" # Changed name
+    config_class = LeKiwiUniConfig
+    name = "lekiwi_uni"
 
-    def __init__(self, config: LeKiwiUniConfig): # Changed config type hint
+    def __init__(self, config: LeKiwiUniConfig):
         super().__init__(config)
-        self.config: LeKiwiUniConfig = config # Changed config type hint
+        self.config: LeKiwiUniConfig = config
+        self.bus_lock = threading.Lock()
         norm_mode_body = MotorNormMode.DEGREES if config.use_degrees else MotorNormMode.RANGE_M100_100
 
 
         self.left_bus = FeetechMotorsBus(
-            port=self.config.port, # Changed to single port
+            port=self.config.port,
             motors={
                 # arm
                 "arm_left_shoulder_pan": Motor(1, "sts3215", norm_mode_body),
@@ -79,27 +81,22 @@ class LeKiwiUni(Robot): # Renamed class
             calibration=self.calibration,
         )
 
-        # Removed right_bus initialization
         self.right_bus = None
 
 
         self.left_arm_motors  = [m for m in self.left_bus.motors        if m.startswith("arm_left_")]
         self.base_motors      = [m for m in self.left_bus.motors        if m.startswith("base_")]
-        #self.left_arm_motors  = [m for m in self.left_bus.motors        if m.startswith("right_arm_")]
 
-        self.right_arm_motors = [] # Removed right arm motors
-
-        # self.arm_motors = [motor for motor in self.left_bus.motors if motor.startswith("arm")]
-        # self.base_motors = [motor for motor in self.left_bus.motors if motor.startswith("base")]
+        self.right_arm_motors = []
 
         self.cameras = make_cameras_from_configs(config.cameras)
 
 
         self.lift = LiftAxis(
-        LiftAxisConfig(),        
-        bus_left=self.left_bus,
-        bus_right=None, # Removed right bus
-)
+            LiftAxisConfig(),        
+            bus_left=self.left_bus,
+            bus_right=None,
+        )
 
 
     @property
@@ -113,12 +110,11 @@ class LeKiwiUni(Robot): # Renamed class
                 #"left_wrist_yaw.pos",
                 "arm_left_wrist_roll.pos",
                 "arm_left_gripper.pos",
-                # Removed right arm state features
                 "x.vel",
                 "y.vel",
                 "theta.vel",
-                "lift_axis.height_mm",   # ← 新增
-                #"lift_axis.vel",         # ← 新增（可选，做调试用）
+                "lift_axis.height_mm",
+                #"lift_axis.vel",
             ),
             float,
         )
@@ -137,39 +133,30 @@ class LeKiwiUni(Robot): # Renamed class
     def action_features(self) -> dict[str, type]:
         return self._state_ft
 
-    # @property
-    # def is_connected(self) -> bool:
-    #     return self.left_bus.is_connected and all(cam.is_connected for cam in self.cameras.values())
-    
     @property
     def is_connected(self) -> bool:
-        cams_ok = all(cam.is_connected for cam in self.cameras.values())
-        return self.left_bus.is_connected and cams_ok # Removed right_bus check
-
-
+        return self.left_bus.is_connected
 
     def connect(self, calibrate: bool = True) -> None:
-        if self.is_connected:
-            raise DeviceAlreadyConnectedError(f"{self} already connected")
+        with self.bus_lock:
+            if self.is_connected:
+                raise DeviceAlreadyConnectedError(f"{self} already connected")
 
-        self.left_bus.connect()
-        # Removed right_bus.connect()
-        if not self.is_calibrated and calibrate:
-            logger.info(
-                "Mismatch between calibration values in the motor and the calibration file or no calibration file found"
-            )
-            self.calibrate()
+            self.left_bus.connect()
+            if not self.is_calibrated and calibrate:
+                logger.info(
+                    "Mismatch between calibration values in the motor and the calibration file or no calibration file found"
+                )
+                self.calibrate()
 
-        for cam in self.cameras.values():
-            cam.connect()
+            for cam in self.cameras.values():
+                cam.connect()
 
-        self.configure()
-        logger.info(f"{self} connected.")
+            self.configure()
+            logger.info(f"{self} connected.")
 
-        self.lift.home()
-        print("Lift axis homed to 0mm.")
-
-        
+            self.lift.home()
+            print("Lift axis homed to 0mm.")
 
     @property
     def is_calibrated(self) -> bool:
@@ -194,12 +181,9 @@ class LeKiwiUni(Robot): # Renamed class
                 calib_left = {k: v for k, v in self.calibration.items() if k in self.left_bus.motors}
                 self.left_bus.write_calibration(calib_left, cache=False)
                 self.left_bus.calibration = calib_left
-
-                # Removed right bus calibration logic
-
                 return
 
-        logger.info(f"\nRunning calibration of {self} (uni-bus)") # Changed message
+        logger.info(f"\nRunning calibration of {self} (uni-bus)")
 
         if not getattr(self, "left_arm_motors", None):
             raise RuntimeError("left_arm_motors is empty; expected names starting with 'left_arm_'")
@@ -224,11 +208,6 @@ class LeKiwiUni(Robot): # Renamed class
             l_mins[m] = 0
             l_maxs[m] = 4095
 
-        right_homing = {} # Kept for consistency in the following merge, though empty
-        r_mins, r_maxs = {}, {} # Kept for consistency in the following merge, though empty
-
-        # Removed right arm calibration logic
-
         # Merge → filter by bus and write back → save as a single file
         self.calibration = {}
 
@@ -241,20 +220,13 @@ class LeKiwiUni(Robot): # Renamed class
                 range_max=l_maxs.get(name, 4095),
             )
 
-        # Removed right bus calibration merge logic
-
         # Write back: each bus only writes its own entries to avoid KeyError
         calib_left = {k: v for k, v in self.calibration.items() if k in self.left_bus.motors}
         self.left_bus.write_calibration(calib_left, cache=False)
         self.left_bus.calibration = calib_left
 
-        # Removed right bus calibration write back logic
-
         self._save_calibration()
         print("Calibration saved to", self.calibration_fpath)
-
-
-
 
     def configure(self):
         # Set-up arm actuators (position mode)
@@ -272,15 +244,6 @@ class LeKiwiUni(Robot): # Renamed class
 
         for name in self.base_motors:
             self.left_bus.write("Operating_Mode", name, OperatingMode.VELOCITY.value)
-
-        #self.left_bus.enable_torque()
-
-        # Removed right_bus configuration
-
-        #self.lift.configure()
-
-
-
 
     def setup_motors(self) -> None:
         # Simplified to only left bus motors (assuming self.arm_motors and self.base_motors refer to left bus)
@@ -422,7 +385,7 @@ class LeKiwiUni(Robot): # Renamed class
             "y.vel": y,
             "theta.vel": theta,
         }  # m/s and deg/s
-    
+        
     def _raw_to_ma(raw):
         try:
             return float(raw) * 6.5
@@ -430,42 +393,33 @@ class LeKiwiUni(Robot): # Renamed class
             return 0.0
         
     def get_observation(self) -> dict[str, Any]:
-        if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+        with self.bus_lock:
+            if not self.is_connected:
+                raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # Read actuators position for arm and vel for base
-        start = time.perf_counter()
-        # arm_pos = self.left_bus.sync_read("Present_Position", self.arm_motors)
+            # Read actuators position for arm and vel for base
+            start = time.perf_counter()
+            left_pos = self.left_bus.sync_read("Present_Position", self.left_arm_motors)
 
-        #print(f"Left arm motors: {self.left_arm_motors}, Right arm motors: {self.right_arm_motors}")  # debug
-        left_pos = self.left_bus.sync_read("Present_Position", self.left_arm_motors)   # left_arm_*
+            base_wheel_vel = self.left_bus.sync_read("Present_Velocity", self.base_motors)
 
+            base_vel = self._wheel_raw_to_body(
+                base_wheel_vel["base_left_wheel"],
+                base_wheel_vel["base_back_wheel"],
+                base_wheel_vel["base_right_wheel"],
+            )
 
-        base_wheel_vel = self.left_bus.sync_read("Present_Velocity", self.base_motors)
+            left_arm_state = {f"{k}.pos": v for k, v in left_pos.items()}
+            right_arm_state = {}
 
-        base_vel = self._wheel_raw_to_body(
-            base_wheel_vel["base_left_wheel"],
-            base_wheel_vel["base_back_wheel"],
-            base_wheel_vel["base_right_wheel"],
-        )
+            obs_dict = {**left_arm_state, **right_arm_state,**base_vel}
+            self.lift.contribute_observation(obs_dict)
 
-        # Removed right_pos
-        # right_pos = self.right_bus.sync_read("Present_Position", self.right_arm_motors)  # right_arm_*
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logger.debug(f"{self} read state: {dt_ms:.1f}ms")
 
-
-        left_arm_state = {f"{k}.pos": v for k, v in left_pos.items()}
-        # Removed right_arm_state
-        right_arm_state = {}
-
-        obs_dict = {**left_arm_state, **right_arm_state,**base_vel}
-        self.lift.contribute_observation(obs_dict)
-        #print(f"Observation dict so far: {obs_dict}")  # debug
-
-        dt_ms = (time.perf_counter() - start) * 1e3
-        logger.debug(f"{self} read state: {dt_ms:.1f}ms")
-
-        # currents protection
-        self.read_and_check_currents(limit_ma=2000, print_currents=True)
+            # currents protection
+            self.read_and_check_currents(limit_ma=2000, print_currents=True)
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
@@ -475,6 +429,11 @@ class LeKiwiUni(Robot): # Renamed class
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
         return obs_dict
+
+    def update_lift(self):
+        with self.bus_lock:
+            if self.is_connected:
+                self.lift.update()
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         """Command AlohaMini to move to a target joint configuration.
@@ -489,74 +448,53 @@ class LeKiwiUni(Robot): # Renamed class
         Returns:
             np.ndarray: the action sent to the motors, potentially clipped.
         """
-        if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+        with self.bus_lock:
+            if not self.is_connected:
+                raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # arm_goal_pos = {k: v for k, v in action.items() if k.endswith(".pos")}
-        left_pos  = {k: v for k, v in action.items() if k.endswith(".pos") and k.startswith("arm_left_")}
-        # Removed right_pos
-        right_pos = {}
+            left_pos  = {k: v for k, v in action.items() if k.endswith(".pos") and k.startswith("arm_left_")}
+            right_pos = {}
 
+            base_goal_vel = {k: v for k, v in action.items() if k.endswith(".vel")}
 
-        base_goal_vel = {k: v for k, v in action.items() if k.endswith(".vel")}
+            base_wheel_goal_vel = self._body_to_wheel_raw(
+                base_goal_vel["x.vel"],
+                base_goal_vel["y.vel"],
+                base_goal_vel["theta.vel"],
+            )
 
-        base_wheel_goal_vel = self._body_to_wheel_raw(
-            base_goal_vel["x.vel"],
-            base_goal_vel["y.vel"],
-            base_goal_vel["theta.vel"],
-        )
+            self.lift.apply_action(action)
 
-        # Cap goal position when too far away from present position.
-        # /!\ Slower fps expected due to reading from the follower.
-        # if self.config.max_relative_target is not None:
-        #     present_pos = self.left_bus.sync_read("Present_Position", self.arm_motors)
-        #     goal_present_pos = {key: (g_pos, present_pos[key]) for key, g_pos in arm_goal_pos.items()}
-        #     arm_safe_goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
-        #     arm_goal_pos = arm_safe_goal_pos
+            if left_pos and self.config.max_relative_target is not None:
+                present_left = self.left_bus.sync_read("Present_Position", self.left_arm_motors)  # left_arm_*
+                gp_left = {k: (v, present_left[k.replace(".pos", "")]) for k, v in left_pos.items()}
+                left_pos = ensure_safe_goal_position(gp_left, self.config.max_relative_target)
+        
+            if left_pos:
+                self.left_bus.sync_write("Goal_Position", {k.replace(".pos", ""): v for k, v in left_pos.items()})
+            self.left_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
 
-        self.lift.apply_action(action)
-
-        if left_pos and self.config.max_relative_target is not None:
-            present_left = self.left_bus.sync_read("Present_Position", self.left_arm_motors)  # left_arm_*
-            gp_left = {k: (v, present_left[k.replace(".pos", "")]) for k, v in left_pos.items()}
-            left_pos = ensure_safe_goal_position(gp_left, self.config.max_relative_target)
-
-        # Removed right_bus send_action logic
-
-        # Send goal position to the actuators
-        # arm_goal_pos_raw = {k.replace(".pos", ""): v for k, v in arm_goal_pos.items()}
-        # self.left_bus.sync_write("Goal_Position", arm_goal_pos_raw)
-        # self.left_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
-
-        # return {**arm_goal_pos, **base_goal_vel}
-
-        #print(f"[{filename}:{lineno}]Sending left_pos:{left_pos}, right_pos:{right_pos}, base_wheel_goal_vel:{base_wheel_goal_vel}")  # debug
-    
-        if left_pos:
-            self.left_bus.sync_write("Goal_Position", {k.replace(".pos", ""): v for k, v in left_pos.items()})
-        # Removed right_bus send_action logic
-        self.left_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
-
-        lift_sent = {k: v for k, v in action.items() if k.startswith("lift_axis.")}
-        return {**left_pos, **right_pos, **base_goal_vel, **lift_sent}
+            lift_sent = {k: v for k, v in action.items() if k.startswith("lift_axis.")}
+            return {**left_pos, **right_pos, **base_goal_vel, **lift_sent}
 
 
     def stop_base(self):
-        self.left_bus.sync_write("Goal_Velocity", dict.fromkeys(self.base_motors, 0), num_retry=0)
-        logger.info("Base motors stopped")
+        with self.bus_lock:
+            self.left_bus.sync_write("Goal_Velocity", dict.fromkeys(self.base_motors, 0), num_retry=0)
+            logger.info("Base motors stopped")
 
     def read_and_check_currents(self, limit_ma, print_currents):
         """Read left/right bus currents (mA), print them, and enforce overcurrent protection"""
+        # Note: This is called within get_observation which already has the lock, 
+        # so we don't need another lock here.
         scale = 6.5  # sts3215 电流单位转换系数
         left_curr_raw = {}
         left_curr_raw = self.left_bus.sync_read("Present_Current", list(self.left_bus.motors.keys()))
-        right_curr_raw = {} # Removed right_curr_raw initialization for right bus
-        # Removed if getattr(self, "right_bus", None): ...
+        right_curr_raw = {} 
 
         if print_currents:
             left_line = "{" + ",".join(str(int(v * scale)) for v in left_curr_raw.values()) + "}"
             print(f"Left Bus currents: {left_line}")
-            # Removed if right_curr_raw: ...
 
         for name, raw in {**left_curr_raw, **right_curr_raw}.items():
             current_ma = float(raw) * scale
@@ -575,14 +513,24 @@ class LeKiwiUni(Robot): # Renamed class
         return {k: round(v * scale, 1) for k, v in {**left_curr_raw, **right_curr_raw}.items()}
 
     def disconnect(self):
-        if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+        with self.bus_lock:
+            if not self.is_connected:
+                raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        self.stop_base()
-        self.left_bus.disconnect(self.config.disable_torque_on_disconnect)
-        self.right_bus = None # Explicitly set to None after disconnect
-        # Removed right_bus.disconnect()
-        for cam in self.cameras.values():
-            cam.disconnect()
+            try:
+                # Need to unlock to call stop_base because stop_base also uses lock
+                # But stop_base calls left_bus.sync_write which is what we need to protect.
+                # Actually, recursive locks (RLock) would solve this, but simple Lock is fine
+                # if we just call the inner bus methods or manually handle it.
+                # Here, stop_base is simple enough to just call the bus write directly.
+                self.left_bus.sync_write("Goal_Velocity", dict.fromkeys(self.base_motors, 0), num_retry=0)
+                logger.info("Base motors stopped")
+            except Exception:
+                pass
 
-        logger.info(f"{self} disconnected.")
+            self.left_bus.disconnect(self.config.disable_torque_on_disconnect)
+            self.right_bus = None
+            for cam in self.cameras.values():
+                cam.disconnect()
+
+            logger.info(f"{self} disconnected.")

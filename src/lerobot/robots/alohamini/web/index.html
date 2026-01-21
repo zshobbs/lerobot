@@ -12,13 +12,16 @@
         .status-light { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; }
         .disconnected { background: red; }
         .connected { background: green; }
+        @keyframes blinker { 50% { opacity: 0; } }
+        .blink { animation: blinker 1s linear infinite; }
     </style>
 </head>
 <body>
     <h1>LeRobot Web Control</h1>
     <div id="status">
         <span>WebSocket: <span id="ws-status-light" class="status-light disconnected"></span><span id="ws-status">Disconnected</span></span> | 
-        <span>Bridge: <span id="bridge-status-light" class="status-light disconnected"></span><span id="bridge-status">Disconnected</span></span>
+        <span>Bridge: <span id="bridge-status-light" class="status-light disconnected"></span><span id="bridge-status">Disconnected</span></span> |
+        <span>Recording: <span id="rec-status" style="color: grey; font-weight: bold;">STOPPED</span></span>
     </div>
     <div id="videos">
         <img id="image-1" />
@@ -34,6 +37,7 @@
         <div>
             <h2>Keyboard Input</h2>
             <pre id="key-display">Keys pressed: None</pre>
+            <p>Press <b>'r'</b> to toggle recording.</p>
         </div>
     </div>
 
@@ -42,6 +46,7 @@
         const wsStatusLight = document.getElementById('ws-status-light');
         const bridgeStatus = document.getElementById('bridge-status');
         const bridgeStatusLight = document.getElementById('bridge-status-light');
+        const recStatus = document.getElementById('rec-status');
         const stateEl = document.getElementById('state');
         const imageElements = [
             document.getElementById('image-1'),
@@ -53,6 +58,7 @@
         const pressedKeys = new Set();
 
         let ws;
+        let isRecording = false;
         
         const actionState = {
             "x.vel": 0.0,
@@ -132,6 +138,19 @@
                             }
                         }
                     }
+
+                    if (msg.is_recording !== undefined) {
+                        isRecording = msg.is_recording;
+                        if (isRecording) {
+                            recStatus.textContent = "RECORDING";
+                            recStatus.style.color = "red";
+                            recStatus.classList.add("blink"); 
+                        } else {
+                            recStatus.textContent = "STOPPED";
+                            recStatus.style.color = "grey";
+                            recStatus.classList.remove("blink");
+                        }
+                    }
                 }
             };
         }
@@ -143,6 +162,13 @@
         }
 
         window.addEventListener('keydown', (e) => {
+            if (e.key === 'r' && !e.repeat) {
+                console.log("Toggling recording...");
+                const type = isRecording ? 'stop_recording' : 'start_recording';
+                ws.send(JSON.stringify({ type: type }));
+                return;
+            }
+
             if (keyMap[e.key]) {
                 e.preventDefault();
                 actionState[keyMap[e.key].axis] = keyMap[e.key].val;

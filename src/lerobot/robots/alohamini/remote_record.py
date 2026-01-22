@@ -80,7 +80,7 @@ def build_features(fps: int):
         
     return features
 
-def parse_frame_data(data: dict) -> dict | None:
+def parse_frame_data(data: dict, default_task: str) -> dict | None:
     """Parses the WebSocket message into a LeRobotDataset compatible frame."""
     obs_data = data.get("data", {})
     act_data = data.get("action", {})
@@ -120,11 +120,12 @@ def parse_frame_data(data: dict) -> dict | None:
         **decoded_images
     }
     
-    frame["task"] = "teleoperation" 
+    # Use task from server if available, otherwise fallback to CLI arg
+    frame["task"] = data.get("task", default_task)
     
     return frame
 
-def dataset_worker(queue: multiprocessing.Queue, repo_id: str, root: Path, fps: int):
+def dataset_worker(queue: multiprocessing.Queue, repo_id: str, root: Path, fps: int, default_task: str):
     """
     Worker process to handle dataset I/O and video encoding.
     Consumes raw JSON data from the queue.
@@ -139,7 +140,7 @@ def dataset_worker(queue: multiprocessing.Queue, repo_id: str, root: Path, fps: 
         format=f"%(asctime)s [Worker] [%(levelname)s] %(message)s"
     )
     
-    logging.info(f"Dataset Worker started. Root: {root}")
+    logging.info(f"Dataset Worker started. Root: {root} | Task: {default_task}")
     
     features = build_features(fps)
     dataset = LeRobotDataset.create(
@@ -187,7 +188,7 @@ def dataset_worker(queue: multiprocessing.Queue, repo_id: str, root: Path, fps: 
             # Process Data if Recording
             if current_episode_recording:
                 try:
-                    frame_data = parse_frame_data(data)
+                    frame_data = parse_frame_data(data, default_task)
                     if frame_data:
                         dataset.add_frame(frame_data)
                         frame_in_episode_count += 1
@@ -206,14 +207,14 @@ def dataset_worker(queue: multiprocessing.Queue, repo_id: str, root: Path, fps: 
         logging.info("Dataset finalized. Worker exiting.")
 
 class RemoteRecorder:
-    def __init__(self, host: str, port: int, repo_id: str, root: Path, fps: int):
+    def __init__(self, host: str, port: int, repo_id: str, root: Path, fps: int, task: str):
         self.uri = f"ws://{host}:{port}/ws?quality=hq"
         self.queue_size = 2048
         self.queue = multiprocessing.Queue(maxsize=self.queue_size)
         
         self.worker = multiprocessing.Process(
             target=dataset_worker,
-            args=(self.queue, repo_id, root, fps)
+            args=(self.queue, repo_id, root, fps, task)
         )
         self.stop_event = asyncio.Event()
         self.frame_receive_count = 0
@@ -277,6 +278,7 @@ def main():
     parser.add_argument("--repo-id", type=str, required=True, help="Dataset Repo ID (e.g., lerobot/my_dataset)")
     parser.add_argument("--root", type=Path, default="data/remote_recordings", help="Local root directory for dataset")
     parser.add_argument("--fps", type=int, default=30, help="Recording FPS")
+    parser.add_argument("--task", type=str, default="teleoperation", help="Task description for the dataset")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
@@ -291,7 +293,8 @@ def main():
         port=args.port,
         repo_id=args.repo_id,
         root=args.root,
-        fps=args.fps
+        fps=args.fps,
+        task=args.task
     )
     recorder.run()
 

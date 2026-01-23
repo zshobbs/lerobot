@@ -84,7 +84,7 @@ def main():
     logging.info("Leader arm connected.")
 
     # --- Setup and run WebSocket App ---
-    ws_url = f"ws://{args.robot_ip}:8000/ws"
+    ws_url = f"ws://{args.robot_ip}:8000/ws?quality=silent"
     logging.info(f"Connecting to robot at {ws_url}...")
     
     ws_app = websocket.WebSocketApp(ws_url,

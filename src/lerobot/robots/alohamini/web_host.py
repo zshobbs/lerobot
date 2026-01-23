@@ -77,26 +77,79 @@ class ConnectionManager:
     def __init__(self):
         self.lq_connections: list[WebSocket] = []
         self.hq_connections: list[WebSocket] = []
+        
+        # LQ: Track active send tasks to drop frames if busy (Low Latency)
+        self.lq_active_tasks: dict[WebSocket, asyncio.Task] = {}
+        
+        # HQ: Use a queue to buffer frames (Reliability)
+        self.hq_queues: dict[WebSocket, asyncio.Queue] = {}
+        self.hq_sender_tasks: dict[WebSocket, asyncio.Task] = {}
 
     async def connect(self, websocket: WebSocket, quality: str = "lq"):
         await websocket.accept()
         if quality == "hq":
             self.hq_connections.append(websocket)
-        else:
+            # Create a safety buffer for network jitter (approx 6 seconds @ 30fps)
+            # This protects the Robot's RAM while allowing smooth sending.
+            queue = asyncio.Queue(maxsize=200)
+            self.hq_queues[websocket] = queue
+            # Start a dedicated worker to drain this queue
+            self.hq_sender_tasks[websocket] = asyncio.create_task(self._hq_sender_loop(websocket, queue))
+        elif quality == "lq":
             self.lq_connections.append(websocket)
+        # "silent" or others are ignored for broadcasting
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.lq_connections:
             self.lq_connections.remove(websocket)
+            if websocket in self.lq_active_tasks:
+                self.lq_active_tasks[websocket].cancel()
+                del self.lq_active_tasks[websocket]
+                
         if websocket in self.hq_connections:
             self.hq_connections.remove(websocket)
+            if websocket in self.hq_sender_tasks:
+                self.hq_sender_tasks[websocket].cancel()
+                del self.hq_sender_tasks[websocket]
+            if websocket in self.hq_queues:
+                del self.hq_queues[websocket]
+
+    async def _safe_send_lq(self, websocket: WebSocket, message: str):
+        """Helper to send LQ message and cleanup task tracker."""
+        try:
+            await websocket.send_text(message)
+        except Exception:
+            pass
+        finally:
+            self.lq_active_tasks.pop(websocket, None)
+
+    async def _hq_sender_loop(self, websocket: WebSocket, queue: asyncio.Queue):
+        """Dedicated worker to send HQ frames reliably."""
+        try:
+            while True:
+                message = await queue.get()
+                await websocket.send_text(message)
+                queue.task_done()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logging.error(f"HQ Sender Error: {e}")
 
     async def broadcast(self, message_lq: str, message_hq: str):
-        # Fire-and-forget broadcast to avoid waiting for slow clients
+        # 1. LQ Clients: Drop frame if previous send is still active (Latency priority)
         for connection in self.lq_connections:
-            asyncio.create_task(connection.send_text(message_lq))
+            if connection not in self.lq_active_tasks:
+                task = asyncio.create_task(self._safe_send_lq(connection, message_lq))
+                self.lq_active_tasks[connection] = task
+                
+        # 2. HQ Clients: Buffer frame in queue (Completeness priority)
         for connection in self.hq_connections:
-            asyncio.create_task(connection.send_text(message_hq))
+            queue = self.hq_queues.get(connection)
+            if queue:
+                try:
+                    queue.put_nowait(message_hq)
+                except asyncio.QueueFull:
+                    logging.warning(f"HQ Client buffer full! Dropping frame for {connection.client}")
 
 manager = ConnectionManager()
 

@@ -209,7 +209,9 @@ def dataset_worker(queue: multiprocessing.Queue, repo_id: str, root: Path, fps: 
 class RemoteRecorder:
     def __init__(self, host: str, port: int, repo_id: str, root: Path, fps: int, task: str):
         self.uri = f"ws://{host}:{port}/ws?quality=hq"
-        self.queue_size = 2048
+        # 10 minutes @ 30fps = 18000 frames. 
+        # This allows the RAM to absorb slow disk writes for a long time.
+        self.queue_size = 18000
         self.queue = multiprocessing.Queue(maxsize=self.queue_size)
         
         self.worker = multiprocessing.Process(

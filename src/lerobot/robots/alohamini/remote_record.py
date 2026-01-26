@@ -143,15 +143,24 @@ def dataset_worker(queue: multiprocessing.Queue, repo_id: str, root: Path, fps: 
     logging.info(f"Dataset Worker started. Root: {root} | Task: {default_task}")
     
     features = build_features(fps)
-    dataset = LeRobotDataset.create(
-        repo_id=repo_id,
-        fps=fps,
-        root=root,
-        features=features,
-        use_videos=True, 
-        image_writer_processes=1, 
-        image_writer_threads=4 
-    )
+    
+    if root.exists():
+        logging.info(f"Loading existing dataset from {root}")
+        dataset = LeRobotDataset(
+            repo_id=repo_id,
+            root=root
+        )
+        dataset.start_image_writer(num_processes=1, num_threads=4)
+    else:
+        dataset = LeRobotDataset.create(
+            repo_id=repo_id,
+            fps=fps,
+            root=root,
+            features=features,
+            use_videos=True, 
+            image_writer_processes=1, 
+            image_writer_threads=4 
+        )
     
     current_episode_recording = False
     frame_in_episode_count = 0

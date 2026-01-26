@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeRobot Dashboard - {{ repo_id }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+</head>
+<body class="bg-gray-100 text-gray-900">
+    <div id="app" class="container mx-auto p-4">
+        <header class="mb-6 bg-white shadow rounded-lg p-4 flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold text-gray-800">LeRobot Dataset: {{ repo_id }}</h1>
+                <div class="text-sm text-gray-500 mt-1">
+                    Episodes: <span class="font-mono">{{ total_episodes }}</span> | 
+                    Frames: <span class="font-mono">{{ total_frames }}</span> | 
+                    FPS: <span class="font-mono">{{ fps }}</span>
+                </div>
+            </div>
+            <div class="space-x-2">
+                <button class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow">
+                    Refresh
+                </button>
+            </div>
+        </header>
+
+        <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Sidebar: Episode List -->
+            <div class="bg-white shadow rounded-lg p-4 h-[80vh] flex flex-col">
+                <h2 class="text-lg font-semibold mb-4">Episodes</h2>
+                <div class="overflow-y-auto flex-1 space-y-2">
+                    <div 
+                        v-for="ep in episodes" 
+                        :key="ep.index"
+                        @click="selectEpisode(ep)"
+                        :class="['p-3 rounded cursor-pointer border transition-colors', 
+                                 selectedEpisode?.index === ep.index ? 'bg-blue-50 border-blue-500' : 'bg-gray-50 border-gray-200 hover:bg-gray-100']"
+                    >
+                        <div class="flex justify-between items-center">
+                            <span class="font-bold">Episode {{ ep.index }}</span>
+                            <span class="text-xs bg-gray-200 px-2 py-1 rounded">{{ ep.length }} frames</span>
+                        </div>
+                        <div class="text-xs text-gray-500 mt-1 truncate">
+                            {{ ep.tasks.join(', ') }}
+                        </div>
+                    </div>
+                </div>
+                <!-- Pagination placeholder -->
+                <div class="mt-4 pt-4 border-t flex justify-center space-x-2">
+                    <button @click="loadEpisodes(offset - limit)" :disabled="offset === 0" class="px-3 py-1 bg-gray-200 rounded disabled:opacity-50">Prev</button>
+                    <button @click="loadEpisodes(offset + limit)" class="px-3 py-1 bg-gray-200 rounded">Next</button>
+                </div>
+            </div>
+
+            <!-- Main Content: Player & Editor -->
+            <div class="lg:col-span-2 space-y-6">
+                <!-- Video Player -->
+                <div v-if="selectedEpisode" class="bg-white shadow rounded-lg p-4">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-lg font-semibold">Episode {{ selectedEpisode.index }} Viewer</h2>
+                        <select v-model="selectedCamera" class="border rounded p-1">
+                            <option v-for="cam in videoKeys" :key="cam" :value="cam">{{ cam }}</option>
+                        </select>
+                    </div>
+                    
+                    <div v-if="selectedCamera" class="aspect-video bg-black rounded overflow-hidden relative group">
+                        <video 
+                            ref="videoPlayer"
+                            :src="`/api/episodes/${selectedEpisode.index}/video/${selectedCamera}`" 
+                            controls 
+                            class="w-full h-full object-contain"
+                        ></video>
+                    </div>
+                    <div v-else class="h-64 flex items-center justify-center bg-gray-100 text-gray-400">
+                        Select a camera to view
+                    </div>
+
+                    <!-- Editor Controls -->
+                    <div class="mt-6 border-t pt-4">
+                        <h3 class="font-semibold mb-2">Actions</h3>
+                        <div class="flex space-x-4">
+                            <button @click="deleteEpisode" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded shadow flex items-center">
+                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                Delete Episode
+                            </button>
+                            <!-- Placeholder for Trim -->
+                            <button class="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded shadow opacity-50 cursor-not-allowed" title="Coming soon">
+                                Trim Episode
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div v-else class="bg-white shadow rounded-lg p-12 flex flex-col items-center justify-center text-gray-400">
+                    <svg class="w-16 h-16 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    Select an episode to view
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        const { createApp } = Vue
+
+        createApp({
+            data() {
+                return {
+                    episodes: [],
+                    selectedEpisode: null,
+                    videoKeys: [],
+                    selectedCamera: null,
+                    offset: 0,
+                    limit: 50
+                }
+            },
+            mounted() {
+                this.loadEpisodes()
+            },
+            methods: {
+                async loadEpisodes(newOffset = 0) {
+                    if (newOffset < 0) return;
+                    this.offset = newOffset;
+                    try {
+                        const res = await fetch(`/api/episodes?limit=${this.limit}&offset=${this.offset}`);
+                        const data = await res.json();
+                        this.episodes = data.episodes;
+                    } catch (e) {
+                        console.error(e);
+                        alert("Failed to load episodes");
+                    }
+                },
+                async selectEpisode(ep) {
+                    this.selectedEpisode = null; // reset to force re-render if needed
+                    try {
+                        const res = await fetch(`/api/episodes/${ep.index}`);
+                        const data = await res.json();
+                        this.selectedEpisode = data;
+                        this.videoKeys = data.video_keys;
+                        if (this.videoKeys.length > 0) {
+                            this.selectedCamera = this.videoKeys[0];
+                        }
+                    } catch (e) {
+                        console.error(e);
+                        alert("Failed to load episode details");
+                    }
+                },
+                async deleteEpisode() {
+                    if (!this.selectedEpisode) return;
+                    if (!confirm(`Are you sure you want to DELETE Episode ${this.selectedEpisode.index}? This cannot be undone.`)) return;
+                    
+                    try {
+                        const res = await fetch('/api/episodes/delete', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({episode_indices: [this.selectedEpisode.index]})
+                        });
+                        const data = await res.json();
+                        if (data.status === 'success') {
+                            alert("Episode deleted (logic pending implementation)");
+                            this.selectedEpisode = null;
+                            this.loadEpisodes(this.offset);
+                        } else {
+                            alert("Failed: " + data.message);
+                        }
+                    } catch (e) {
+                        console.error(e);
+                        alert("Error deleting episode");
+                    }
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html>

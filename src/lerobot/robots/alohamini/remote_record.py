@@ -19,7 +19,7 @@ import torch
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import ACTION, OBS_STATE
 
-# Define the exact state ordering used by LeKiwiUni
+# Define the exact state ordering used by LeKiwi
 STATE_KEYS = [
     "arm_left_shoulder_pan.pos",
     "arm_left_shoulder_lift.pos",
@@ -27,6 +27,12 @@ STATE_KEYS = [
     "arm_left_wrist_flex.pos",
     "arm_left_wrist_roll.pos",
     "arm_left_gripper.pos",
+    "arm_right_shoulder_pan.pos",
+    "arm_right_shoulder_lift.pos",
+    "arm_right_elbow_flex.pos",
+    "arm_right_wrist_flex.pos",
+    "arm_right_wrist_roll.pos",
+    "arm_right_gripper.pos",
     "x.vel",
     "y.vel",
     "theta.vel",

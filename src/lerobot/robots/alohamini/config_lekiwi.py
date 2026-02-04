@@ -43,8 +43,8 @@ def lekiwi_cameras_config() -> dict[str, CameraConfig]:
 @RobotConfig.register_subclass("lekiwi")
 @dataclass
 class LeKiwiConfig(RobotConfig):
-    left_port: str = "/dev/am_arm_follower_left"  # port to connect to the bus
-    right_port: str = "/dev/am_arm_follower_right"  # port to connect to the bus
+    left_port: str = "/dev/ttyUSB-follower-left"  # port to connect to the bus
+    right_port: str = "/dev/ttyUSB-follower-right"  # port to connect to the bus
     disable_torque_on_disconnect: bool = True
 
     # `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.

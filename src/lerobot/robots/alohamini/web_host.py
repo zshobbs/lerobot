@@ -31,13 +31,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import uvicorn
 
-from lerobot.robots.alohamini.config_lekiwi_uni import LeKiwiUniConfig
-from lerobot.robots.alohamini.lekiwi_uni import LeKiwiUni
+from lerobot.robots.alohamini.config_lekiwi import LeKiwiConfig
+from lerobot.robots.alohamini.lekiwi import LeKiwi
 
 # Note: LeRobotDataset is NOT imported here to save resources on the Pi.
 # Recording is offloaded to a remote client.
 
-robot: LeKiwiUni | None = None
+robot: LeKiwi | None = None
 latest_action: dict | None = None
 latest_observation: dict = {}
 server_action_state: dict = {}
@@ -258,10 +258,10 @@ async def send_merged_actions():
 async def lifespan(app: FastAPI):
     # Startup
     global robot
-    logging.info("Configuring LeKiwi Uni-arm Robot")
-    robot_config = LeKiwiUniConfig()
-    robot_config.id = "AlohaMiniUniRobot"
-    robot = LeKiwiUni(robot_config)
+    logging.info("Configuring LeKiwi Robot")
+    robot_config = LeKiwiConfig()
+    robot_config.id = "AlohaMiniRobot"
+    robot = LeKiwi(robot_config)
 
     logging.info("Connecting to AlohaMini")
     robot.connect()

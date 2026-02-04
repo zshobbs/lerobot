@@ -17,6 +17,7 @@
 import inspect
 import logging
 import os
+import threading
 import time
 from functools import cached_property
 from itertools import chain
@@ -56,6 +57,7 @@ class LeKiwi(Robot):
     def __init__(self, config: LeKiwiConfig):
         super().__init__(config)
         self.config = config
+        self.bus_lock = threading.Lock()
         norm_mode_body = MotorNormMode.DEGREES if config.use_degrees else MotorNormMode.RANGE_M100_100
 
 
@@ -168,25 +170,26 @@ class LeKiwi(Robot):
 
 
     def connect(self, calibrate: bool = True) -> None:
-        if self.is_connected:
-            raise DeviceAlreadyConnectedError(f"{self} already connected")
+        with self.bus_lock:
+            if self.is_connected:
+                raise DeviceAlreadyConnectedError(f"{self} already connected")
 
-        self.left_bus.connect()
-        self.right_bus.connect()
-        if not self.is_calibrated and calibrate:
-            logger.info(
-                "Mismatch between calibration values in the motor and the calibration file or no calibration file found"
-            )
-            self.calibrate()
+            self.left_bus.connect()
+            self.right_bus.connect()
+            if not self.is_calibrated and calibrate:
+                logger.info(
+                    "Mismatch between calibration values in the motor and the calibration file or no calibration file found"
+                )
+                self.calibrate()
 
-        for cam in self.cameras.values():
-            cam.connect()
+            for cam in self.cameras.values():
+                cam.connect()
 
-        self.configure()
-        logger.info(f"{self} connected.")
+            self.configure()
+            logger.info(f"{self} connected.")
 
-        self.lift.home()
-        print("Lift axis homed to 0mm.")
+            self.lift.home()
+            print("Lift axis homed to 0mm.")
 
         
 
@@ -480,40 +483,41 @@ class LeKiwi(Robot):
             return 0.0
         
     def get_observation(self) -> dict[str, Any]:
-        if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+        with self.bus_lock:
+            if not self.is_connected:
+                raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # Read actuators position for arm and vel for base
-        start = time.perf_counter()
-        # arm_pos = self.left_bus.sync_read("Present_Position", self.arm_motors)
+            # Read actuators position for arm and vel for base
+            start = time.perf_counter()
+            # arm_pos = self.left_bus.sync_read("Present_Position", self.arm_motors)
 
-        #print(f"Left arm motors: {self.left_arm_motors}, Right arm motors: {self.right_arm_motors}")  # debug
-        left_pos = self.left_bus.sync_read("Present_Position", self.left_arm_motors)   # left_arm_*
-
-
-        base_wheel_vel = self.left_bus.sync_read("Present_Velocity", self.base_motors)
-
-        base_vel = self._wheel_raw_to_body(
-            base_wheel_vel["base_left_wheel"],
-            base_wheel_vel["base_back_wheel"],
-            base_wheel_vel["base_right_wheel"],
-        )
-
-        right_pos = self.right_bus.sync_read("Present_Position", self.right_arm_motors)  # right_arm_*
+            #print(f"Left arm motors: {self.left_arm_motors}, Right arm motors: {self.right_arm_motors}")  # debug
+            left_pos = self.left_bus.sync_read("Present_Position", self.left_arm_motors)   # left_arm_*
 
 
-        left_arm_state = {f"{k}.pos": v for k, v in left_pos.items()}
-        right_arm_state = {f"{k}.pos": v for k, v in right_pos.items()}
+            base_wheel_vel = self.left_bus.sync_read("Present_Velocity", self.base_motors)
 
-        obs_dict = {**left_arm_state, **right_arm_state,**base_vel}
-        self.lift.contribute_observation(obs_dict)
-        #print(f"Observation dict so far: {obs_dict}")  # debug
+            base_vel = self._wheel_raw_to_body(
+                base_wheel_vel["base_left_wheel"],
+                base_wheel_vel["base_back_wheel"],
+                base_wheel_vel["base_right_wheel"],
+            )
 
-        dt_ms = (time.perf_counter() - start) * 1e3
-        logger.debug(f"{self} read state: {dt_ms:.1f}ms")
+            right_pos = self.right_bus.sync_read("Present_Position", self.right_arm_motors)  # right_arm_*
 
-        # currents protection
-        self.read_and_check_currents(limit_ma=2000, print_currents=True)
+
+            left_arm_state = {f"{k}.pos": v for k, v in left_pos.items()}
+            right_arm_state = {f"{k}.pos": v for k, v in right_pos.items()}
+
+            obs_dict = {**left_arm_state, **right_arm_state,**base_vel}
+            self.lift.contribute_observation(obs_dict)
+            #print(f"Observation dict so far: {obs_dict}")  # debug
+
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logger.debug(f"{self} read state: {dt_ms:.1f}ms")
+
+            # currents protection
+            self.read_and_check_currents(limit_ma=2000, print_currents=True)
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
@@ -523,6 +527,11 @@ class LeKiwi(Robot):
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
         return obs_dict
+
+    def update_lift(self):
+        with self.bus_lock:
+            if self.is_connected:
+                self.lift.update()
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         """Command AlohaMini to move to a target joint configuration.
@@ -537,63 +546,65 @@ class LeKiwi(Robot):
         Returns:
             np.ndarray: the action sent to the motors, potentially clipped.
         """
-        if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+        with self.bus_lock:
+            if not self.is_connected:
+                raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        # arm_goal_pos = {k: v for k, v in action.items() if k.endswith(".pos")}
-        left_pos  = {k: v for k, v in action.items() if k.endswith(".pos") and k.startswith("arm_left_")}
-        right_pos = {k: v for k, v in action.items() if k.endswith(".pos") and k.startswith("arm_right_")}
-
-
-        base_goal_vel = {k: v for k, v in action.items() if k.endswith(".vel")}
-
-        base_wheel_goal_vel = self._body_to_wheel_raw(
-            base_goal_vel["x.vel"], base_goal_vel["y.vel"], base_goal_vel["theta.vel"]
-        )
-
-        # Cap goal position when too far away from present position.
-        # /!\ Slower fps expected due to reading from the follower.
-        # if self.config.max_relative_target is not None:
-        #     present_pos = self.left_bus.sync_read("Present_Position", self.arm_motors)
-        #     goal_present_pos = {key: (g_pos, present_pos[key]) for key, g_pos in arm_goal_pos.items()}
-        #     arm_safe_goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
-        #     arm_goal_pos = arm_safe_goal_pos
-
-        self.lift.apply_action(action)
-
-        if left_pos and self.config.max_relative_target is not None:
-            present_left = self.left_bus.sync_read("Present_Position", self.left_arm_motors)  # left_arm_*
-            gp_left = {k: (v, present_left[k.replace(".pos", "")]) for k, v in left_pos.items()}
-            left_pos = ensure_safe_goal_position(gp_left, self.config.max_relative_target)
-
-        if self.right_bus and right_pos and self.config.max_relative_target is not None:
-            present_right = self.right_bus.sync_read("Present_Position", self.right_arm_motors)
-            gp_right = {k: (v, present_right[k.replace(".pos", "")]) for k, v in right_pos.items()}
-            right_pos = ensure_safe_goal_position(gp_right, self.config.max_relative_target)
+            # arm_goal_pos = {k: v for k, v in action.items() if k.endswith(".pos")}
+            left_pos  = {k: v for k, v in action.items() if k.endswith(".pos") and k.startswith("arm_left_")}
+            right_pos = {k: v for k, v in action.items() if k.endswith(".pos") and k.startswith("arm_right_")}
 
 
-        # Send goal position to the actuators
-        # arm_goal_pos_raw = {k.replace(".pos", ""): v for k, v in arm_goal_pos.items()}
-        # self.left_bus.sync_write("Goal_Position", arm_goal_pos_raw)
-        # self.left_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
+            base_goal_vel = {k: v for k, v in action.items() if k.endswith(".vel")}
 
-        # return {**arm_goal_pos, **base_goal_vel}
+            base_wheel_goal_vel = self._body_to_wheel_raw(
+                base_goal_vel["x.vel"], base_goal_vel["y.vel"], base_goal_vel["theta.vel"]
+            )
 
-        #print(f"[{filename}:{lineno}]Sending left_pos:{left_pos}, right_pos:{right_pos}, base_wheel_goal_vel:{base_wheel_goal_vel}")  # debug
-    
-        if left_pos:
-            self.left_bus.sync_write("Goal_Position", {k.replace(".pos", ""): v for k, v in left_pos.items()})
-        if self.right_bus and right_pos:
-            self.right_bus.sync_write("Goal_Position", {k.replace(".pos", ""): v for k, v in right_pos.items()})
-        self.left_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
+            # Cap goal position when too far away from present position.
+            # /!\ Slower fps expected due to reading from the follower.
+            # if self.config.max_relative_target is not None:
+            #     present_pos = self.left_bus.sync_read("Present_Position", self.arm_motors)
+            #     goal_present_pos = {key: (g_pos, present_pos[key]) for key, g_pos in arm_goal_pos.items()}
+            #     arm_safe_goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
+            #     arm_goal_pos = arm_safe_goal_pos
 
-        lift_sent = {k: v for k, v in action.items() if k.startswith("lift_axis.")}
-        return {**left_pos, **right_pos, **base_goal_vel, **lift_sent}
+            self.lift.apply_action(action)
+
+            if left_pos and self.config.max_relative_target is not None:
+                present_left = self.left_bus.sync_read("Present_Position", self.left_arm_motors)  # left_arm_*
+                gp_left = {k: (v, present_left[k.replace(".pos", "")]) for k, v in left_pos.items()}
+                left_pos = ensure_safe_goal_position(gp_left, self.config.max_relative_target)
+
+            if self.right_bus and right_pos and self.config.max_relative_target is not None:
+                present_right = self.right_bus.sync_read("Present_Position", self.right_arm_motors)
+                gp_right = {k: (v, present_right[k.replace(".pos", "")]) for k, v in right_pos.items()}
+                right_pos = ensure_safe_goal_position(gp_right, self.config.max_relative_target)
+
+
+            # Send goal position to the actuators
+            # arm_goal_pos_raw = {k.replace(".pos", ""): v for k, v in arm_goal_pos.items()}
+            # self.left_bus.sync_write("Goal_Position", arm_goal_pos_raw)
+            # self.left_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
+
+            # return {**arm_goal_pos, **base_goal_vel}
+
+            #print(f"[{filename}:{lineno}]Sending left_pos:{left_pos}, right_pos:{right_pos}, base_wheel_goal_vel:{base_wheel_goal_vel}")  # debug
+        
+            if left_pos:
+                self.left_bus.sync_write("Goal_Position", {k.replace(".pos", ""): v for k, v in left_pos.items()})
+            if self.right_bus and right_pos:
+                self.right_bus.sync_write("Goal_Position", {k.replace(".pos", ""): v for k, v in right_pos.items()})
+            self.left_bus.sync_write("Goal_Velocity", base_wheel_goal_vel)
+
+            lift_sent = {k: v for k, v in action.items() if k.startswith("lift_axis.")}
+            return {**left_pos, **right_pos, **base_goal_vel, **lift_sent}
 
 
     def stop_base(self):
-        self.left_bus.sync_write("Goal_Velocity", dict.fromkeys(self.base_motors, 0), num_retry=0)
-        logger.info("Base motors stopped")
+        with self.bus_lock:
+            self.left_bus.sync_write("Goal_Velocity", dict.fromkeys(self.base_motors, 0), num_retry=0)
+            logger.info("Base motors stopped")
 
     def read_and_check_currents(self, limit_ma, print_currents):
         """Read left/right bus currents (mA), print them, and enforce overcurrent protection"""
@@ -628,14 +639,21 @@ class LeKiwi(Robot):
         return {k: round(v * scale, 1) for k, v in {**left_curr_raw, **right_curr_raw}.items()}
 
     def disconnect(self):
-        if not self.is_connected:
-            raise DeviceNotConnectedError(f"{self} is not connected.")
+        with self.bus_lock:
+            if not self.is_connected:
+                raise DeviceNotConnectedError(f"{self} is not connected.")
 
-        self.stop_base()
-        self.left_bus.disconnect(self.config.disable_torque_on_disconnect)
-        self.right_bus.disconnect(self.config.disable_torque_on_disconnect)
-        for cam in self.cameras.values():
-            cam.disconnect()
+            try:
+                # Inline stop_base logic to avoid re-entrant lock issue
+                self.left_bus.sync_write("Goal_Velocity", dict.fromkeys(self.base_motors, 0), num_retry=0)
+                logger.info("Base motors stopped")
+            except Exception:
+                pass
 
-        logger.info(f"{self} disconnected.")
+            self.left_bus.disconnect(self.config.disable_torque_on_disconnect)
+            self.right_bus.disconnect(self.config.disable_torque_on_disconnect)
+            for cam in self.cameras.values():
+                cam.disconnect()
+
+            logger.info(f"{self} disconnected.")
 

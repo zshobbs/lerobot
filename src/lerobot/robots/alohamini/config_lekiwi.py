@@ -22,21 +22,18 @@ from ..config import RobotConfig
 
 def lekiwi_cameras_config() -> dict[str, CameraConfig]:
     return {
-        # "head_top": OpenCVCameraConfig(
-        #     index_or_path="/dev/am_camera_head_top", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-        # ),
-        # "head_back": OpenCVCameraConfig(
-        #     index_or_path="/dev/am_camera_head_back", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-        # ),
-        # "head_front": OpenCVCameraConfig(
-        #     index_or_path="/dev/am_camera_head_front", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-        # ),
-        # "wrist_left": OpenCVCameraConfig(
-        #     index_or_path="/dev/am_camera_wrist_left", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-        # ),
-        # "wrist_right": OpenCVCameraConfig(
-        #     index_or_path="/dev/am_camera_wrist_right", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
-        # ),
+         "head_top": OpenCVCameraConfig(
+             index_or_path="/dev/video-top", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+         ),
+         "wrist_right": OpenCVCameraConfig(
+             index_or_path="/dev/video-follower-right", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+         ),
+         "head_front": OpenCVCameraConfig(
+             index_or_path="/dev/video-chest", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+         ),
+          "wrist_left": OpenCVCameraConfig(
+              index_or_path="/dev/video-follower-left", fps=30, width=640, height=480, rotation=Cv2Rotation.NO_ROTATION
+          ),
     }
 
 
